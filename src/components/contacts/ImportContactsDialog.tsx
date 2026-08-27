@@ -190,7 +190,7 @@ export function ImportContactsDialog({
       const chunk = pending.slice(i, i + CHUNK_SIZE);
       const { error } = await supabase
         .from('contacts')
-        .upsert(chunk, { onConflict: 'phone' });
+        .upsert(chunk, { onConflict: 'org_id,phone' });
       if (error) {
         errors.push({ row: -1, reason: `batch ${i / CHUNK_SIZE + 1}: ${error.message}` });
       } else {
