@@ -30,6 +30,13 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 1000] as const;
 
 const SOURCE_OPTIONS = ['whatsapp', 'instagram', 'import', 'manual'];
 
+// Cabeçalho fixo da tabela de contatos. O fundo precisa ser OPACO (as linhas
+// passam por baixo ao rolar) — #0F0F14 é o --color-bg-primary com o mesmo
+// clareamento sutil que o header tinha antes (bg-white/2%). A linha de baixo
+// vai via box-shadow em vez de border para não brigar com o border-collapse.
+const STICKY_TH =
+  'sticky top-0 z-10 bg-[#0F0F14] p-3 shadow-[0_1px_0_rgba(59,130,246,0.12)]';
+
 const fmtDate = (s: string | null | undefined) =>
   s ? new Date(s).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
 
@@ -384,12 +391,14 @@ export default function ContactsPage() {
           )}
         </div>
 
-        {/* Desktop (md+): tabela. */}
-        <div className="hidden md:block rounded-lg border border-[rgba(59,130,246,0.08)] overflow-x-auto">
+        {/* Desktop (md+): tabela. O container rola na vertical (max-h) para o
+            cabeçalho poder ficar fixo (sticky) enquanto a lista rola — o
+            fundo do th precisa ser opaco, senão as linhas aparecem por baixo. */}
+        <div className="hidden md:block rounded-lg border border-[rgba(59,130,246,0.08)] overflow-auto max-h-[70vh]">
           <table className="w-full min-w-[920px] text-sm">
             <thead>
-              <tr className="bg-white/[0.02] text-left">
-                <th className="p-3 w-10">
+              <tr className="text-left">
+                <th className={`${STICKY_TH} w-10`}>
                   <input
                     type="checkbox"
                     checked={allOnPageSelected}
@@ -398,13 +407,13 @@ export default function ContactsPage() {
                     aria-label="Selecionar todos da página"
                   />
                 </th>
-                <th className="p-3 text-label">Nome</th>
-                <th className="p-3 text-label">Telefone</th>
-                <th className="p-3 text-label">Canal</th>
-                <th className="p-3 text-label">Origem</th>
-                <th className="p-3 text-label">Primeiro registro</th>
-                <th className="p-3 text-label">Tags</th>
-                <th className="p-3 w-20" />
+                <th className={`${STICKY_TH} text-label`}>Nome</th>
+                <th className={`${STICKY_TH} text-label`}>Telefone</th>
+                <th className={`${STICKY_TH} text-label`}>Canal</th>
+                <th className={`${STICKY_TH} text-label`}>Origem</th>
+                <th className={`${STICKY_TH} text-label`}>Primeiro registro</th>
+                <th className={`${STICKY_TH} text-label`}>Tags</th>
+                <th className={`${STICKY_TH} w-20`} />
               </tr>
             </thead>
             <tbody>
