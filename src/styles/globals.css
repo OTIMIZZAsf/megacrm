@@ -48,9 +48,13 @@
 /* -----------------------------------------------------------------------------
    Base body: pure dark with soft radial glows
    ----------------------------------------------------------------------------- */
-html, body, #root {
-  min-height: 100vh;
-}
+  html {
+     color-scheme: dark;
+   }
+
+   html, body, #root {
+     min-height: 100vh;
+   }
 
 body {
   background-color: var(--color-bg-primary);
