@@ -2,10 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { getSupabase } from '@/lib/supabase';
 import { useAppUser } from '@/app/providers/AppUserProvider';
 import type { Contact, ContactWithTags, Tag } from '@/types/db';
-
+ 
 export type ContactSort = 'recent' | 'oldest' | 'name' | 'first_seen';
 export type LeadTypeFilter = 'Lead' | 'Cliente';
-
+ 
 // Linha do export CSV (nome, telefone, e-mail, canal, origem, tags, primeiro
 // registro). O id permite exportar só os contatos selecionados na tabela.
 export interface ContactExportRow {
@@ -18,7 +18,7 @@ export interface ContactExportRow {
   tags: string[];
   first_seen: string | null;
 }
-
+ 
 interface UseContactsInput {
   search?: string;
   tagId?: string | null;
@@ -29,7 +29,7 @@ interface UseContactsInput {
   page?: number;
   pageSize?: number;
 }
-
+ 
 interface UseContactsResult {
   contacts: ContactWithTags[];
   total: number;
@@ -48,14 +48,14 @@ interface UseContactsResult {
   /** Busca TODOS os contatos que batem nos filtros atuais (sem paginação) para exportar em CSV. */
   exportContacts: () => Promise<ContactExportRow[]>;
 }
-
+ 
 const PAGE_SIZE_DEFAULT = 25;
-
+ 
 // Resultado da resolução dos filtros que vivem fora da tabela contacts (tag e
 // lead/cliente). `include` restringe a um conjunto de ids; `exclude` remove ids;
 // 'empty' significa que nenhum contato pode casar (curto-circuito).
 type IdFilter = { include: string[] | null; exclude: string[] | null } | 'empty';
-
+ 
 export function useContacts({
   search = '',
   tagId = null,
@@ -70,7 +70,7 @@ export function useContacts({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
+ 
   // Resolve os filtros que dependem de outras tabelas (tag via contact_tags,
   // lead/cliente via deals.lead_type) num par include/exclude aplicável tanto na
   // listagem paginada quanto no export. Lança em caso de erro de query.
@@ -78,7 +78,7 @@ export function useContacts({
     const supabase = getSupabase();
     let include: string[] | null = null;
     let exclude: string[] | null = null;
-
+ 
     if (tagId) {
       const { data: links, error: linksErr } = await supabase
         .from('contact_tags')
@@ -88,7 +88,7 @@ export function useContacts({
       include = (links ?? []).map((l) => l.contact_id as string);
       if (include.length === 0) return 'empty';
     }
-
+ 
     if (leadType) {
       // "Cliente" = contato com ao menos um deal marcado lead_type='Cliente'.
       const { data: dealRows, error: dealsErr } = await supabase
@@ -99,7 +99,7 @@ export function useContacts({
       const clienteIds = Array.from(
         new Set((dealRows ?? []).map((d) => d.contact_id as string)),
       );
-
+ 
       if (leadType === 'Cliente') {
         if (clienteIds.length === 0) return 'empty';
         const clienteSet = new Set(clienteIds);
@@ -110,19 +110,19 @@ export function useContacts({
         exclude = clienteIds;
       }
     }
-
+ 
     return { include, exclude };
   }, [tagId, leadType]);
-
+ 
   const reload = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
     setError(null);
     const supabase = getSupabase();
-
+ 
     const from = (page - 1) * pageSize;
     const to = from + pageSize - 1;
-
+ 
     // Filtros que vivem fora de contacts (tag, lead/cliente) viram include/exclude.
     let idFilter: IdFilter;
     try {
@@ -138,41 +138,41 @@ export function useContacts({
       setLoading(false);
       return;
     }
-
+ 
     let query = supabase
       .from('contacts')
       .select('*', { count: 'exact' })
       .range(from, to);
-
+ 
     // Ordenação (coluna "Primeiro registro" e nome também ordenáveis).
     if (sort === 'oldest') query = query.order('created_at', { ascending: true });
     else if (sort === 'name') query = query.order('name', { ascending: true, nullsFirst: false });
     else if (sort === 'first_seen') query = query.order('first_seen_at', { ascending: false });
     else query = query.order('created_at', { ascending: false });
-
+ 
     if (idFilter.include) {
       query = query.in('id', idFilter.include);
     }
     if (idFilter.exclude && idFilter.exclude.length > 0) {
       query = query.not('id', 'in', `(${idFilter.exclude.join(',')})`);
     }
-
+ 
     if (source) {
       query = query.eq('source', source);
     }
-
+ 
     if (search.trim()) {
       const pattern = `%${search.trim()}%`;
       query = query.or(`name.ilike.${pattern},phone.ilike.${pattern},email.ilike.${pattern}`);
     }
-
+ 
     const { data, error: err, count } = await query;
     if (err) {
       setError(err.message);
       setLoading(false);
       return;
     }
-
+ 
     const ids = (data ?? []).map((c) => c.id as string);
     if (ids.length === 0) {
       setContacts([]);
@@ -180,53 +180,64 @@ export function useContacts({
       setLoading(false);
       return;
     }
-
-    const { data: linkRows, error: linkErr } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag:tag_id(id, name, color, created_at, updated_at)')
-      .in('contact_id', ids);
-    if (linkErr) {
-      setError(linkErr.message);
-      setLoading(false);
-      return;
-    }
-
+ 
+    // Tags e origem (deal mais recente) via lookups em LOTES de 300 ids — com
+    // "Linhas: 1000" a página inteira caberia num único .in('contact_id', ids),
+    // gerando uma URL de GET com ~1000 UUIDs (~36 KB de querystring) que o
+    // Supabase/PostgREST rejeita antes mesmo de rodar a query, respondendo
+    // 400 Bad Request sem corpo JSON (por isso o erro genérico "Bad Request").
+    // Chunking replica o mesmo limite já usado em exportContacts().
+    const ID_CHUNK = 300;
     const byContact = new Map<string, Tag[]>();
-    for (const row of linkRows ?? []) {
-      const contactId = row.contact_id as string;
-      const tag = row.tag as unknown as Tag | null;
-      if (!tag) continue;
-      const arr = byContact.get(contactId) ?? [];
-      arr.push(tag);
-      byContact.set(contactId, arr);
-    }
-
-    // Origem: traffic_type do deal mais recente de cada contato (coluna Origem).
-    const { data: dealRows } = await supabase
-      .from('deals')
-      .select('contact_id, traffic_type, created_at')
-      .in('contact_id', ids)
-      .order('created_at', { ascending: false });
     const trafficByContact = new Map<string, string | null>();
-    for (const d of (dealRows ?? []) as Array<{ contact_id: string; traffic_type: string | null }>) {
-      if (!trafficByContact.has(d.contact_id)) trafficByContact.set(d.contact_id, d.traffic_type);
+ 
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      const slice = ids.slice(i, i + ID_CHUNK);
+ 
+      const { data: linkRows, error: linkErr } = await supabase
+        .from('contact_tags')
+        .select('contact_id, tag:tag_id(id, name, color, created_at, updated_at)')
+        .in('contact_id', slice);
+      if (linkErr) {
+        setError(linkErr.message);
+        setLoading(false);
+        return;
+      }
+      for (const row of linkRows ?? []) {
+        const contactId = row.contact_id as string;
+        const tag = row.tag as unknown as Tag | null;
+        if (!tag) continue;
+        const arr = byContact.get(contactId) ?? [];
+        arr.push(tag);
+        byContact.set(contactId, arr);
+      }
+ 
+      // Origem: traffic_type do deal mais recente de cada contato (coluna Origem).
+      const { data: dealRows } = await supabase
+        .from('deals')
+        .select('contact_id, traffic_type, created_at')
+        .in('contact_id', slice)
+        .order('created_at', { ascending: false });
+      for (const d of (dealRows ?? []) as Array<{ contact_id: string; traffic_type: string | null }>) {
+        if (!trafficByContact.has(d.contact_id)) trafficByContact.set(d.contact_id, d.traffic_type);
+      }
     }
-
+ 
     const merged: ContactWithTags[] = (data ?? []).map((c) => ({
       ...(c as Contact),
       tags: byContact.get(c.id as string) ?? [],
       traffic_type: trafficByContact.get(c.id as string) ?? null,
     }));
-
+ 
     setContacts(merged);
     setTotal(count ?? 0);
     setLoading(false);
   }, [userId, search, source, sort, page, pageSize, resolveIdFilter]);
-
+ 
   useEffect(() => {
     void reload();
   }, [reload]);
-
+ 
   // Export CSV: busca TODOS os contatos que batem nos filtros atuais (search,
   // tag, canal, lead/cliente), paginando por 1000 para não esbarrar no teto do
   // PostgREST, e enriquece com a origem (traffic_type do deal mais recente).
@@ -234,7 +245,7 @@ export function useContacts({
     const supabase = getSupabase();
     const idFilter = await resolveIdFilter();
     if (idFilter === 'empty') return [];
-
+ 
     type RawRow = {
       id: string;
       name: string | null;
@@ -267,7 +278,7 @@ export function useContacts({
       rows.push(...batch);
       if (batch.length < CHUNK) break;
     }
-
+ 
     // Origem e tags por contato — em lotes de 300 ids para não estourar a URL.
     const trafficByContact = new Map<string, string | null>();
     const tagsByContact = new Map<string, string[]>();
@@ -295,7 +306,7 @@ export function useContacts({
         tagsByContact.set(contactId, arr);
       }
     }
-
+ 
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -307,7 +318,7 @@ export function useContacts({
       first_seen: r.first_seen_at ?? r.created_at,
     }));
   }, [resolveIdFilter, source, search]);
-
+ 
   const create: UseContactsResult['create'] = async (input) => {
     if (!userId) return null;
     const { tag_ids = [], ...contactPayload } = input;
@@ -333,7 +344,7 @@ export function useContacts({
     await reload();
     return created;
   };
-
+ 
   const update: UseContactsResult['update'] = async (id, patch) => {
     if (!userId) return;
     const { tag_ids, ...rest } = patch;
@@ -354,7 +365,7 @@ export function useContacts({
     }
     await reload();
   };
-
+ 
   const remove: UseContactsResult['remove'] = async (ids) => {
     if (ids.length === 0) return;
     const supabase = getSupabase();
@@ -365,16 +376,16 @@ export function useContacts({
     }
     await reload();
   };
-
+ 
   const assignTags: UseContactsResult['assignTags'] = async (contactIds, tagIds) => {
     if (!userId || contactIds.length === 0 || tagIds.length === 0) return;
     await assignTagsTo(contactIds, tagIds);
     await reload();
   };
-
+ 
   return { contacts, total, loading, error, reload, create, update, remove, assignTags, exportContacts };
 }
-
+ 
 async function assignTagsTo(contactIds: string[], tagIds: string[]) {
   const supabase = getSupabase();
   const rows = contactIds.flatMap((contact_id) =>
@@ -387,7 +398,7 @@ async function assignTagsTo(contactIds: string[], tagIds: string[]) {
     .upsert(rows, { onConflict: 'contact_id,tag_id' });
   if (error) throw new Error(translateContactError(error.message));
 }
-
+ 
 // Maps the most common Postgres/PostgREST errors to actionable pt-BR messages
 // so a non-technical operator sees "telefone já cadastrado" instead of a raw
 // "duplicate key value violates unique constraint" string.
@@ -407,3 +418,4 @@ function translateContactError(message: string): string {
   }
   return message || 'Não foi possível concluir a operação.';
 }
+ 
